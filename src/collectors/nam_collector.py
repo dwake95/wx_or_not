@@ -240,6 +240,10 @@ def extract_point_data(grib_file: Path, init_time: datetime, valid_time: datetim
         lats = ds['latitude'].values
         lons = ds['longitude'].values
 
+        # NAM uses Lambert Conformal projection, so lat/lon are 2D grids
+        # Check if coordinates are 2D (meshgrid) or 1D
+        is_2d_grid = lats.ndim == 2
+
         # Sample every 0.5 degrees to reduce database size
         # NAM is 12km (~0.11 degrees), so sample every ~4-5 points
         lat_step = 4
@@ -256,22 +260,49 @@ def extract_point_data(grib_file: Path, init_time: datetime, valid_time: datetim
                 if var_name.lower() in str(ds_var).lower() or var_key.lower() in str(ds_var).lower():
                     data = ds[ds_var].values
 
-                    # Sample points
-                    for i in range(0, len(lats), lat_step):
-                        for j in range(0, len(lons), lon_step):
-                            value = float(data[i, j]) if data.ndim == 2 else float(data[0, i, j])
-                            if not np.isnan(value):
-                                records.append((
-                                    MODEL_NAME,
-                                    init_time,
-                                    valid_time,
-                                    lead_time_hours,
-                                    float(lats[i]),
-                                    float(lons[j]),
-                                    var_name,
-                                    value,
-                                    ds[ds_var].attrs.get('units', '')
-                                ))
+                    # Get data shape for proper indexing
+                    if is_2d_grid:
+                        # 2D lat/lon grid (Lambert Conformal)
+                        ny, nx = lats.shape
+                        for i in range(0, ny, lat_step):
+                            for j in range(0, nx, lon_step):
+                                # Extract value based on data dimensions
+                                if data.ndim == 2:
+                                    value = float(data[i, j])
+                                elif data.ndim == 3:
+                                    value = float(data[0, i, j])
+                                else:
+                                    continue
+
+                                if not np.isnan(value):
+                                    records.append((
+                                        MODEL_NAME,
+                                        init_time,
+                                        valid_time,
+                                        lead_time_hours,
+                                        float(lats[i, j]),  # 2D indexing
+                                        float(lons[i, j]),  # 2D indexing
+                                        var_name,
+                                        value,
+                                        ds[ds_var].attrs.get('units', '')
+                                    ))
+                    else:
+                        # 1D lat/lon arrays (regular grid)
+                        for i in range(0, len(lats), lat_step):
+                            for j in range(0, len(lons), lon_step):
+                                value = float(data[i, j]) if data.ndim == 2 else float(data[0, i, j])
+                                if not np.isnan(value):
+                                    records.append((
+                                        MODEL_NAME,
+                                        init_time,
+                                        valid_time,
+                                        lead_time_hours,
+                                        float(lats[i]),
+                                        float(lons[j]),
+                                        var_name,
+                                        value,
+                                        ds[ds_var].attrs.get('units', '')
+                                    ))
                     break
 
         ds.close()
