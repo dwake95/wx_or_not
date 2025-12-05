@@ -223,6 +223,14 @@
                 <div id="nam-metrics" class="loading">Loading NAM metrics...</div>
             </div>
 
+            <!-- HRRR Metrics -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">HRRR Metrics</h2>
+                </div>
+                <div id="hrrr-metrics" class="loading">Loading HRRR metrics...</div>
+            </div>
+
             <!-- Data Statistics -->
             <div class="card">
                 <div class="card-header">
@@ -311,6 +319,10 @@
                             <div class="metric-row">
                                 <span class="metric-label">NAM Verification Pairs:</span>
                                 <span class="metric-value">${data.nam.pairs_count}</span>
+                            </div>
+                            <div class="metric-row">
+                                <span class="metric-label">HRRR Verification Pairs:</span>
+                                <span class="metric-value">${data.hrrr.pairs_count}</span>
                             </div>
                         </div>
                     </div>
@@ -424,6 +436,7 @@
                 loadModelComparison(),
                 loadModelMetrics('GFS'),
                 loadModelMetrics('NAM'),
+                loadModelMetrics('HRRR'),
                 loadStats(),
                 loadSystemInfo()
             ]);
