@@ -251,59 +251,76 @@ def extract_point_data(grib_file: Path, init_time: datetime, valid_time: datetim
 
         records = []
 
-        # Extract variables
-        for var_key, var_info in NAM_VARIABLES.items():
-            var_name = var_info['name']
+        # Variable name mapping from cfgrib names to our standard names
+        var_map = {
+            't2m': 'temperature_2m',
+            'u10': 'u_wind_10m',
+            'v10': 'v_wind_10m',
+            'prmsl': 'mslp',
+            'msl': 'mslp',
+            'TMP': 'temperature_2m',
+            'UGRD': 'u_wind_10m',
+            'VGRD': 'v_wind_10m',
+            'PRMSL': 'mslp',
+        }
 
-            # Find variable in dataset
-            for ds_var in ds.data_vars:
-                if var_name.lower() in str(ds_var).lower() or var_key.lower() in str(ds_var).lower():
-                    data = ds[ds_var].values
+        # Extract whatever variables cfgrib successfully loaded
+        for ds_var in ds.data_vars:
+            # Map to our standardized variable name
+            var_name = var_map.get(ds_var, ds_var)
 
-                    # Get data shape for proper indexing
-                    if is_2d_grid:
-                        # 2D lat/lon grid (Lambert Conformal)
-                        ny, nx = lats.shape
-                        for i in range(0, ny, lat_step):
-                            for j in range(0, nx, lon_step):
-                                # Extract value based on data dimensions
-                                if data.ndim == 2:
-                                    value = float(data[i, j])
-                                elif data.ndim == 3:
-                                    value = float(data[0, i, j])
-                                else:
-                                    continue
+            try:
+                data = ds[ds_var].values
 
-                                if not np.isnan(value):
-                                    records.append((
-                                        MODEL_NAME,
-                                        init_time,
-                                        valid_time,
-                                        lead_time_hours,
-                                        float(lats[i, j]),  # 2D indexing
-                                        float(lons[i, j]),  # 2D indexing
-                                        var_name,
-                                        value,
-                                        ds[ds_var].attrs.get('units', '')
-                                    ))
-                    else:
-                        # 1D lat/lon arrays (regular grid)
-                        for i in range(0, len(lats), lat_step):
-                            for j in range(0, len(lons), lon_step):
-                                value = float(data[i, j]) if data.ndim == 2 else float(data[0, i, j])
-                                if not np.isnan(value):
-                                    records.append((
-                                        MODEL_NAME,
-                                        init_time,
-                                        valid_time,
-                                        lead_time_hours,
-                                        float(lats[i]),
-                                        float(lons[j]),
-                                        var_name,
-                                        value,
-                                        ds[ds_var].attrs.get('units', '')
-                                    ))
-                    break
+                # Get data shape for proper indexing
+                if is_2d_grid:
+                    # 2D lat/lon grid (Lambert Conformal)
+                    ny, nx = lats.shape
+                    for i in range(0, ny, lat_step):
+                        for j in range(0, nx, lon_step):
+                            # Extract value based on data dimensions
+                            if data.ndim == 2:
+                                value = float(data[i, j])
+                            elif data.ndim == 3:
+                                value = float(data[0, i, j])
+                            else:
+                                continue
+
+                            if not np.isnan(value):
+                                records.append((
+                                    MODEL_NAME,
+                                    init_time,
+                                    valid_time,
+                                    lead_time_hours,
+                                    float(lats[i, j]),  # 2D indexing
+                                    float(lons[i, j]),  # 2D indexing
+                                    var_name,
+                                    value,
+                                    ds[ds_var].attrs.get('units', '')
+                                ))
+                else:
+                    # 1D lat/lon arrays (regular grid)
+                    for i in range(0, len(lats), lat_step):
+                        for j in range(0, len(lons), lon_step):
+                            value = float(data[i, j]) if data.ndim == 2 else float(data[0, i, j])
+                            if not np.isnan(value):
+                                records.append((
+                                    MODEL_NAME,
+                                    init_time,
+                                    valid_time,
+                                    lead_time_hours,
+                                    float(lats[i]),
+                                    float(lons[j]),
+                                    var_name,
+                                    value,
+                                    ds[ds_var].attrs.get('units', '')
+                                ))
+
+                logger.info(f"Extracted {len([r for r in records if r[6] == var_name])} points for {var_name} (from {ds_var})")
+
+            except Exception as e:
+                logger.warning(f"Could not process variable {ds_var}: {e}")
+                continue
 
         ds.close()
 

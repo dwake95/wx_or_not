@@ -183,6 +183,8 @@ def process_hrrr_grib(grib_path: Path, region_name: str) -> List[Dict]:
     """
     Process HRRR GRIB2 file and extract forecast data.
 
+    Uses a simple approach: open GRIB once, extract what we can, ignore warnings.
+
     Args:
         grib_path: Path to GRIB2 file
         region_name: Name of the region
@@ -193,7 +195,8 @@ def process_hrrr_grib(grib_path: Path, region_name: str) -> List[Dict]:
     try:
         logger.info(f"Processing GRIB file: {grib_path.name}")
 
-        # Open GRIB2 file with xarray/cfgrib
+        # Open GRIB2 file - it will warn about multi-level variables but that's okay
+        # cfgrib will just pick one level for each variable
         ds = xr.open_dataset(grib_path, engine='cfgrib')
 
         records = []
@@ -201,9 +204,28 @@ def process_hrrr_grib(grib_path: Path, region_name: str) -> List[Dict]:
         # Extract initialization and valid times
         if 'time' in ds.coords:
             init_time = pd.Timestamp(ds.time.values).to_pydatetime()
+        elif 'valid_time' in ds.coords:
+            # Use valid_time and work backwards if we have step
+            valid_time = pd.Timestamp(ds.valid_time.values).to_pydatetime()
+            if 'step' in ds.coords:
+                forecast_step = pd.Timedelta(ds.step.values).total_seconds() / 3600
+                init_time = valid_time - timedelta(hours=forecast_step)
+            else:
+                init_time = valid_time
         else:
-            logger.error("No time coordinate in GRIB file")
-            return records
+            # Extract from filename as fallback
+            import re
+            match = re.search(r'hrrr_(\d{8})_(\d{2})z_f(\d{2})', grib_path.name)
+            if match:
+                date_str, hour_str, fhour_str = match.groups()
+                from datetime import datetime
+                init_time = datetime.strptime(f"{date_str}{hour_str}", "%Y%m%d%H").replace(tzinfo=timezone.utc)
+                forecast_step = int(fhour_str)
+                valid_time = init_time + timedelta(hours=forecast_step)
+                logger.info(f"Extracted time from filename: init={init_time}, step={forecast_step}h")
+            else:
+                logger.error("No time coordinate in GRIB file and couldn't parse filename")
+                return records
 
         if 'step' in ds.coords:
             forecast_step = pd.Timedelta(ds.step.values).total_seconds() / 3600
@@ -227,42 +249,45 @@ def process_hrrr_grib(grib_path: Path, region_name: str) -> List[Dict]:
             lat_grid = lats
             lon_grid = lons
 
-        # Process each variable
-        for var, config in HRRR_VARIABLES.items():
-            var_name = config['name']
+        # Try to extract each variable we want
+        # cfgrib will have opened what it could, we just look for them
+        var_map = {
+            't2m': 'temperature_2m',
+            'u10': 'u_wind_10m',
+            'v10': 'v_wind_10m',
+            'prmsl': 'mslp',
+            'msl': 'mslp',  # alternative name
+            'TMP': 'temperature_2m',  # sometimes cfgrib uses GRIB shortName
+            'UGRD': 'u_wind_10m',
+            'VGRD': 'v_wind_10m',
+        }
 
-            # Map HRRR GRIB variable names to xarray names
-            xr_var_map = {
-                'TMP': 't2m',
-                'UGRD': 'u10',
-                'VGRD': 'v10',
-                'MSLMA': 'prmsl'  # May vary
-            }
+        for ds_var_name in ds.data_vars:
+            # Map to our standardized variable name
+            var_name = var_map.get(ds_var_name, ds_var_name)
 
-            xr_var = xr_var_map.get(var)
-            if xr_var not in ds:
-                # Try alternative names
-                possible_names = [var_name, var.lower(), f"{var}_2m", f"{var}_10m"]
-                xr_var = next((name for name in possible_names if name in ds), None)
-
-            if xr_var and xr_var in ds:
-                values = ds[xr_var].values
+            try:
+                values = ds[ds_var_name].values
 
                 # Flatten arrays for database storage
                 if values.ndim == 2:
                     flat_lats = lat_grid.flatten()
                     flat_lons = lon_grid.flatten()
                     flat_values = values.flatten()
-                else:
+                elif values.ndim == 0:
+                    # Scalar value
                     flat_lats = lat_grid.flatten()
                     flat_lons = lon_grid.flatten()
-                    flat_values = np.full_like(flat_lats, values.item())
+                    flat_values = np.full_like(flat_lats, float(values))
+                else:
+                    logger.warning(f"Unexpected dimensionality for {ds_var_name}: {values.ndim}D")
+                    continue
 
                 # Remove NaN/invalid values
                 valid_mask = ~np.isnan(flat_values)
 
                 # Get units from GRIB attributes
-                units = ds[xr_var].attrs.get('units', '')
+                units = ds[ds_var_name].attrs.get('units', '')
 
                 # Create records
                 for lat, lon, val in zip(flat_lats[valid_mask],
@@ -280,7 +305,11 @@ def process_hrrr_grib(grib_path: Path, region_name: str) -> List[Dict]:
                         'units': units
                     })
 
-                logger.info(f"Extracted {len(records)} points for {var_name}")
+                logger.info(f"Extracted {sum(valid_mask)} points for {var_name} (from {ds_var_name})")
+
+            except Exception as e:
+                logger.warning(f"Could not process variable {ds_var_name}: {e}")
+                continue
 
         ds.close()
         logger.info(f"Processed {len(records)} total forecast points")
