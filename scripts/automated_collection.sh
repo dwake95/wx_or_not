@@ -54,6 +54,17 @@ else
     log "✗ NAM collection failed (exit code: $?)"
 fi
 
+# Wait a bit to avoid overloading NOAA servers
+sleep 10
+
+# Collect HRRR data for all regions
+log "Collecting HRRR forecasts for all regions..."
+if python src/collectors/hrrr_collector.py --region all >> "$LOG_FILE" 2>&1; then
+    log "✓ HRRR collection completed successfully"
+else
+    log "✗ HRRR collection failed (exit code: $?)"
+fi
+
 # Wait a bit before observations
 sleep 5
 

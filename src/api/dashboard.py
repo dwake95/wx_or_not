@@ -56,6 +56,7 @@ class ModelComparison(BaseModel):
     """Comparison of model performances."""
     gfs: VerificationMetrics
     nam: VerificationMetrics
+    hrrr: VerificationMetrics
     winner: str
     win_reason: str
 
@@ -117,14 +118,14 @@ async def get_health_status():
 @router.get("/metrics/{model_name}", response_model=VerificationMetrics)
 async def get_verification_metrics(model_name: str):
     """
-    Get verification metrics for a specific model (GFS or NAM).
+    Get verification metrics for a specific model (GFS, NAM, or HRRR).
 
     Args:
-        model_name: Model name ('GFS' or 'NAM')
+        model_name: Model name ('GFS', 'NAM', or 'HRRR')
     """
     model_name = model_name.upper()
-    if model_name not in ['GFS', 'NAM']:
-        raise HTTPException(status_code=400, detail="Model must be 'GFS' or 'NAM'")
+    if model_name not in ['GFS', 'NAM', 'HRRR']:
+        raise HTTPException(status_code=400, detail="Model must be 'GFS', 'NAM', or 'HRRR'")
 
     try:
         with get_db_connection() as conn:
@@ -181,43 +182,55 @@ async def get_verification_metrics(model_name: str):
 @router.get("/comparison", response_model=ModelComparison)
 async def get_model_comparison():
     """
-    Compare GFS and NAM model performance.
+    Compare GFS, NAM, and HRRR model performance.
 
-    Returns metrics for both models and determines winner.
+    Returns metrics for all models and determines winner.
     """
     try:
         gfs_metrics = await get_verification_metrics("GFS")
         nam_metrics = await get_verification_metrics("NAM")
+        hrrr_metrics = await get_verification_metrics("HRRR")
 
         # Determine winner based on CSI (primary decision metric)
         # If CSI not available, use MAE
-        if gfs_metrics.csi and nam_metrics.csi:
-            if gfs_metrics.csi > nam_metrics.csi:
-                winner = "GFS"
-                reason = f"Higher CSI ({gfs_metrics.csi:.3f} vs {nam_metrics.csi:.3f})"
-            elif nam_metrics.csi > gfs_metrics.csi:
-                winner = "NAM"
-                reason = f"Higher CSI ({nam_metrics.csi:.3f} vs {gfs_metrics.csi:.3f})"
-            else:
-                winner = "TIE"
-                reason = "Equal CSI scores"
-        elif gfs_metrics.mae and nam_metrics.mae:
-            if gfs_metrics.mae < nam_metrics.mae:
-                winner = "GFS"
-                reason = f"Lower MAE ({gfs_metrics.mae:.1f} vs {nam_metrics.mae:.1f} Pa)"
-            elif nam_metrics.mae < gfs_metrics.mae:
-                winner = "NAM"
-                reason = f"Lower MAE ({nam_metrics.mae:.1f} vs {gfs_metrics.mae:.1f} Pa)"
-            else:
-                winner = "TIE"
-                reason = "Equal MAE scores"
+        models_with_csi = []
+        if gfs_metrics.csi:
+            models_with_csi.append(("GFS", gfs_metrics.csi))
+        if nam_metrics.csi:
+            models_with_csi.append(("NAM", nam_metrics.csi))
+        if hrrr_metrics.csi:
+            models_with_csi.append(("HRRR", hrrr_metrics.csi))
+
+        if models_with_csi:
+            # Find model with highest CSI
+            winner_model, winner_csi = max(models_with_csi, key=lambda x: x[1])
+            winner = winner_model
+            other_scores = ', '.join([f"{m}: {c:.3f}" for m, c in models_with_csi if m != winner_model])
+            reason = f"Higher CSI ({winner_csi:.3f} vs {other_scores})" if other_scores else f"CSI: {winner_csi:.3f}"
         else:
-            winner = "INSUFFICIENT_DATA"
-            reason = "Not enough verification data"
+            # Fall back to MAE
+            models_with_mae = []
+            if gfs_metrics.mae:
+                models_with_mae.append(("GFS", gfs_metrics.mae))
+            if nam_metrics.mae:
+                models_with_mae.append(("NAM", nam_metrics.mae))
+            if hrrr_metrics.mae:
+                models_with_mae.append(("HRRR", hrrr_metrics.mae))
+
+            if models_with_mae:
+                # Find model with lowest MAE
+                winner_model, winner_mae = min(models_with_mae, key=lambda x: x[1])
+                winner = winner_model
+                other_scores = ', '.join([f"{m}: {mae:.1f}" for m, mae in models_with_mae if m != winner_model])
+                reason = f"Lower MAE ({winner_mae:.1f} vs {other_scores} Pa)" if other_scores else f"MAE: {winner_mae:.1f} Pa"
+            else:
+                winner = "INSUFFICIENT_DATA"
+                reason = "Not enough verification data"
 
         return ModelComparison(
             gfs=gfs_metrics,
             nam=nam_metrics,
+            hrrr=hrrr_metrics,
             winner=winner,
             win_reason=reason
         )
